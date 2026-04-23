@@ -78,26 +78,39 @@ app.post('/api/get-links', async (req, res) => {
         const seenUrls = new Set();
 
         document.querySelectorAll('a').forEach(a => {
-            let href = a.href;
-            let text = a.textContent.trim().replace(/\s+/g, ' ');
+    let href = a.href;
+    let text = a.textContent.trim().replace(/\s+/g, ' ');
 
-            if (href.startsWith('http') && text.length > 25) {
-                try {
-                    const cleanUrl = new URL(href);
-                    cleanUrl.hash = '';
-                    href = cleanUrl.href;
-                    const pathname = cleanUrl.pathname;
+    // 1. Kiểm tra điều kiện tiên quyết: phải là link http và tiêu đề đủ dài
+    if (href.startsWith('http') && text.length > 25) {
+        try {
+            const cleanUrl = new URL(href);
+            cleanUrl.hash = ''; // Loại bỏ hashtag (#)
+            href = cleanUrl.href;
+            const pathname = cleanUrl.pathname;
 
-                    const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
-                    const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && pathname.split('-').length >= 4;
+            // 2. Định nghĩa các tiêu chí lọc bài viết
+            const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
+            
+            // Riêng qdnd.vn: Bắt buộc đuôi .html và có ít nhất 4 dấu gạch ngang (tiêu đề bài viết)
+            const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && 
+                                 pathname.endsWith('.html') && 
+                                 pathname.split('-').length >= 4;
 
-                    if ((hasHtmlExt || isQdndArticle) && !seenUrls.has(href)) {
-                        seenUrls.add(href);
-                        links.push({ title: text, url: href });
-                    }
-                } catch (e) {}
+            // 3. Danh sách từ khóa loại bỏ (Chủ đề, Video, Ảnh...)
+            const junkTitles = ['đưa nghị quyết của đảng vào cuộc sống', 'video', 'ảnh', 'longform', 'tác phẩm'];
+            const isJunk = junkTitles.some(junk => text.toLowerCase().includes(junk));
+
+            // 4. Kiểm tra tổng hợp trước khi thêm vào danh sách
+            if ((hasHtmlExt || isQdndArticle) && !isJunk && !seenUrls.has(href)) {
+                seenUrls.add(href);
+                links.push({ title: text, url: href });
             }
-        });
+        } catch (e) {
+            // Bỏ qua nếu URL không hợp lệ
+        }
+    }
+});
 
         // 2. Giới hạn 10 bài trước khi gửi về Frontend
         res.json(links.slice(0, 10)); 
