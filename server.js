@@ -122,7 +122,7 @@ document.querySelectorAll('a').forEach(a => {
     }
 });
 
-// API 2: Trích xuất nội dung
+// Cập nhật API 2: Trích xuất nội dung
 app.post('/api/extract', async (req, res) => {
     const { urls } = req.body;
     if (!urls || !Array.isArray(urls)) return res.status(400).json({ error: 'Dữ liệu không hợp lệ' });
@@ -137,12 +137,26 @@ app.post('/api/extract', async (req, res) => {
 
             let htmlData;
             if (needsScraper) {
-                // Bắt buộc phải có &render=true để vượt tường lửa như lúc lấy link
-                const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&render=true&url=${encodeURIComponent(targetUrl)}`;
+                let scraperApiUrl;
+                
+                if (domain === 'qdnd.vn') {
+                    // Xử lý đặc biệt cho qdnd.vn: 
+                    // Dùng premium=true (IP dân cư) và keep_headers=true. 
+                    // TẠM BỎ render=true để tránh bị kẹt ở trang chờ JS Challenge của Cloudflare.
+                    scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&premium=true&keep_headers=true&url=${encodeURIComponent(targetUrl)}`;
+                } else {
+                    // Các báo khác vẫn giữ nguyên render=true nếu cần
+                    scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&render=true&url=${encodeURIComponent(targetUrl)}`;
+                }
+
                 const response = await axiosClient.get(scraperApiUrl);
                 htmlData = response.data;
+
+                // Mẹo Debug: In ra 200 ký tự đầu tiên để kiểm tra xem có bị dính trang Cloudflare không
+                // Nếu thấy chữ "Just a moment..." hoặc "Cloudflare" thì nghĩa là vẫn bị block.
+                // console.log(`[DEBUG] HTML từ ${domain}:`, htmlData.substring(0, 200));
+
             } else {
-                // Các trang bình thường thì dùng thẳng axiosClient
                 const response = await axiosClient.get(targetUrl);
                 htmlData = response.data;
             }
@@ -161,12 +175,12 @@ app.post('/api/extract', async (req, res) => {
                     textContent: article.textContent
                 });
             } else {
-                results.push({ url: targetUrl, error: 'Không tìm thấy nội dung bài viết' });
+                results.push({ url: targetUrl, error: 'Không tìm thấy nội dung bài viết. Có thể bị Cloudflare chặn.' });
             }
 
         } catch (error) {
             console.error(`Lỗi trích xuất ${targetUrl}:`, error.message);
-            results.push({ url: targetUrl, error: 'Lỗi trong quá trình trích xuất' });
+            results.push({ url: targetUrl, error: 'Lỗi trong quá trình trích xuất (Timeout hoặc sai Cú pháp)' });
         }
     }
 
