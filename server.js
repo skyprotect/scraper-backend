@@ -5,40 +5,114 @@ const https = require('https');
 const jsdom = require('jsdom');
 const { JSDOM } = jsdom;
 const { Readability } = require('@mozilla/readability');
-const Parser = require('rss-parser');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const rssParser = new Parser();
-
-// Cấu hình Stealth Axios - Giả danh Người dùng thật thay vì Googlebot
+// Cấu hình Axios giả danh Chrome
 function getStealthAxiosConfig() {
     return {
         httpsAgent: new https.Agent({ rejectUnauthorized: false }),
         headers: { 
-            // Giả danh trình duyệt Chrome trên máy tính Windows
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-            // Các header Client-Hints cực kỳ quan trọng để qua mặt WAF
             'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
             'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
             'Upgrade-Insecure-Requests': '1',
-            'Cache-Control': 'max-age=0'
-            // Xóa bỏ X-Forwarded-For vì IP ngẫu nhiên dễ bị đánh dấu spam
+            'Cache-Control': 'no-cache'
         },
         timeout: 20000 
     };
 }
 
-// Map tên nguồn báo
+// Hàm cốt lõi: Tự động xoay vòng Proxy miễn phí nếu bị Cloudflare chặn
+async function fetchWithBypass(targetUrl, responseType = 'text') {
+    const config = getStealthAxiosConfig();
+    config.responseType = responseType;
+
+    // 1. Thử kết nối trực tiếp
+    try {
+        const res = await axios.get(targetUrl, config);
+        // Kiểm tra xem có bị Cloudflare ép giải captcha không
+        if (responseType === 'text' && typeof res.data === 'string') {
+            if (res.data.includes('Just a moment...') || res.data.includes('Cloudflare')) {
+                throw new Error('Bị chặn bởi Cloudflare JS Challenge');
+            }
+        }
+        return res.data;
+    } catch (error) {
+        console.log(`[!] Truy cập trực tiếp thất bại (${targetUrl}). Chuyển sang hệ thống Proxy dự phòng...`);
+
+        // 2. Nếu thất bại, xoay vòng qua các Open Proxy mượn IP
+        const proxies = [
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
+            `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
+        ];
+
+        for (const proxyUrl of proxies) {
+            try {
+                console.log(`[>] Đang thử Proxy: ${proxyUrl}`);
+                const proxyConfig = { timeout: 25000, responseType };
+                const res = await axios.get(proxyUrl, proxyConfig);
+                
+                if (responseType === 'text' && typeof res.data === 'string') {
+                    if (res.data.includes('Just a moment...') || res.data.includes('Cloudflare')) {
+                        continue; // Proxy này cũng bị chặn, thử proxy tiếp theo
+                    }
+                }
+                console.log(`[+] Proxy truy cập thành công!`);
+                return res.data;
+            } catch (e) {
+                console.log(`[-] Proxy thất bại.`);
+            }
+        }
+        throw new Error('Tất cả Proxy đều bị tường lửa chặn');
+    }
+}
+
+// Bóc tách RSS thủ công bằng Regex (Chống mọi lỗi XML/Unexpected close tag)
+function parseRssManually(xmlData) {
+    const links = [];
+    const seenUrls = new Set();
+    
+    // Tìm tất cả các block <item>...</item>
+    const items = xmlData.match(/<item>[\s\S]*?<\/item>/gi) || [];
+
+    for (const item of items) {
+        let title = '';
+        const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/i) || item.match(/<title>([\s\S]*?)<\/title>/i);
+        if (titleMatch) title = titleMatch[1].trim();
+
+        let url = '';
+        const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/i);
+        if (linkMatch) {
+            url = linkMatch[1].trim().replace('<![CDATA[', '').replace(']]>', '');
+        }
+
+        if (title && url) {
+            try {
+                const cleanUrl = new URL(url);
+                cleanUrl.hash = ''; 
+                url = cleanUrl.href;
+            } catch(e) {}
+
+            if (!seenUrls.has(url)) {
+                seenUrls.add(url);
+                links.push({ title, url });
+            }
+        }
+        if (links.length >= 10) break; 
+    }
+    return links;
+}
+
 function getSourceFromUrl(urlString) {
     try {
         const url = new URL(urlString);
@@ -56,7 +130,6 @@ function getSourceFromUrl(urlString) {
     }
 }
 
-// Chuẩn hóa tên tác giả
 function formatAuthorName(nameStr) {
     if (!nameStr) return 'Không rõ';
     let cleaned = nameStr.replace(/-/g, ',');
@@ -67,26 +140,23 @@ function formatAuthorName(nameStr) {
     }).filter(p => p.length > 0).join(', ');
 }
 
-// Tự động map URL trang chủ sang URL RSS
 function getRssFeedUrl(inputUrl) {
     try {
         const url = new URL(inputUrl);
         let hostname = url.hostname.replace('www.', '');
-        
         const rssMap = {
             'baohaiphong.vn': 'https://baohaiphong.vn/rss/tin-moi-nhat.rss',
             'qdnd.vn': 'https://www.qdnd.vn/rss/tin-moi-nhat.rss',
             'vnexpress.net': 'https://vnexpress.net/rss/tin-moi-nhat.rss',
             'tuoitre.vn': 'https://tuoitre.vn/rss/tin-moi-nhat.rss'
         };
-        
         return inputUrl.endsWith('.rss') ? inputUrl : (rssMap[hostname] || inputUrl);
     } catch (error) {
         return inputUrl;
     }
 }
 
-// --- API 1: Lấy link bài viết ---
+// --- API 1: Lấy link bài viết (Sử dụng Bypass + Regex Parse) ---
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
@@ -94,46 +164,20 @@ app.post('/api/get-links', async (req, res) => {
     const targetRssUrl = getRssFeedUrl(url);
 
     try {
-        const response = await axios.get(targetRssUrl, getStealthAxiosConfig());
-        let xmlData = response.data;
-
-        // Bắt lỗi: Nếu WAF chặn và trả về trang HTML (CAPTCHA)
-        if (typeof xmlData === 'string' && xmlData.trim().toLowerCase().startsWith('<html')) {
-            console.error(`[!] Bị Cloudflare/WAF chặn tại: ${targetRssUrl}`);
-            return res.status(403).json({ error: 'Máy chủ báo đang bật chế độ chống Bot. Hãy thử lại sau ít phút.' });
+        const xmlData = await fetchWithBypass(targetRssUrl);
+        const links = parseRssManually(xmlData);
+        
+        if (links.length === 0) {
+            return res.status(500).json({ error: 'Không tìm thấy bài viết. Nguồn cấp RSS có thể đang trống hoặc bị lỗi cấu trúc nặng.' });
         }
-
-        // Fix lỗi "Attribute without value": Chuẩn hóa các attribute mồ côi trong file XML nếu có
-        xmlData = xmlData.replace(/\s+(async|defer|checked|selected|disabled|readonly|multiple|ismap)([\s>])/gi, ' $1="true"$2');
-
-        const feed = await rssParser.parseString(xmlData);
-        const links = [];
-        const seenUrls = new Set();
-
-        for (const item of feed.items) {
-            let href = item.link;
-            try {
-                const cleanUrl = new URL(href);
-                cleanUrl.hash = ''; 
-                href = cleanUrl.href;
-            } catch (e) {}
-
-            if (href && !seenUrls.has(href)) {
-                seenUrls.add(href);
-                links.push({ title: item.title, url: href });
-            }
-
-            if (links.length >= 10) break; 
-        }
-
         res.json(links);
     } catch (error) {
-        console.error(`Lỗi get-links (RSS) cho ${targetRssUrl}:`, error.message);
-        res.status(500).json({ error: 'Không thể đọc RSS Feed. Chi tiết lỗi: ' + error.message });
+        console.error(`Lỗi get-links cho ${targetRssUrl}:`, error.message);
+        res.status(500).json({ error: 'Không thể đọc dữ liệu: ' + error.message });
     }
 });
 
-// --- API 2: Trích xuất nội dung ---
+// --- API 2: Trích xuất nội dung (Sử dụng Bypass) ---
 app.post('/api/extract', async (req, res) => {
     const { urls } = req.body;
     if (!urls || !Array.isArray(urls)) return res.status(400).json({ error: 'Dữ liệu không hợp lệ' });
@@ -142,26 +186,9 @@ app.post('/api/extract', async (req, res) => {
 
     for (const targetUrl of urls) {
         try {
-            let htmlData;
-            
-            try {
-                const response = await axios.get(targetUrl, getStealthAxiosConfig());
-                htmlData = response.data;
-            } catch (error) {
-                const isBlocked = error.response && (error.response.status === 403 || error.response.status === 503);
-                
-                if (isBlocked) {
-                    console.log(`[!] Bị chặn tại ${targetUrl} (${error.response.status}). Thử Google Cache...`);
-                    const cacheUrl = `https://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(targetUrl)}`;
-                    
-                    const cacheResponse = await axios.get(cacheUrl, getStealthAxiosConfig());
-                    htmlData = cacheResponse.data;
-                } else {
-                    throw error; 
-                }
-            }
+            const htmlData = await fetchWithBypass(targetUrl);
 
-            // Dọn dẹp HTML trước khi parse để jsdom không bị lỗi cú pháp
+            // Dọn dẹp HTML trước khi parse
             const cleanHtml = htmlData
                 .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
                 .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
@@ -169,10 +196,7 @@ app.post('/api/extract', async (req, res) => {
                 .replace(/<svg[^>]*>[\s\S]*?<\/svg>/gi, '');
 
             const virtualConsole = new jsdom.VirtualConsole();
-            const dom = new JSDOM(cleanHtml, { 
-                url: targetUrl,
-                virtualConsole 
-            });
+            const dom = new JSDOM(cleanHtml, { url: targetUrl, virtualConsole });
 
             const reader = new Readability(dom.window.document);
             const article = reader.parse();
@@ -195,11 +219,7 @@ app.post('/api/extract', async (req, res) => {
                 const authorText = formatAuthorName(article.byline);
                 const formattedText = `Nguồn: ${sourceText}\nTiêu đề: ${article.title.trim()}\nTác giả: ${authorText}\n\nNội dung:\n${article.textContent.trim()}`;
 
-                results.push({
-                    url: targetUrl,
-                    text: formattedText,
-                    images: images
-                });
+                results.push({ url: targetUrl, text: formattedText, images: images });
             } else {
                 results.push({ url: targetUrl, error: 'Không thể bóc tách nội dung HTML' });
             }
@@ -213,22 +233,19 @@ app.post('/api/extract', async (req, res) => {
     res.json(results);
 });
 
-// --- API 3: Proxy Tải ảnh ---
+// --- API 3: Proxy Tải ảnh (Sử dụng Bypass Stream) ---
 app.get('/api/download-image', async (req, res) => {
     const imageUrl = req.query.url;
     if (!imageUrl) return res.status(400).send('Thiếu URL ảnh');
 
     try {
-        const response = await axios({
-            url: imageUrl,
-            method: 'GET',
-            responseType: 'stream',
-            ...getStealthAxiosConfig()
-        });
+        const streamData = await fetchWithBypass(imageUrl, 'stream');
+        
         const urlPath = new URL(imageUrl).pathname;
         const filename = urlPath.substring(urlPath.lastIndexOf('/') + 1) || `image_${Date.now()}.jpg`;
+        
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        response.data.pipe(res);
+        streamData.pipe(res);
     } catch (error) {
         console.error(`Lỗi proxy tải ảnh ${imageUrl}`);
         res.status(500).send('Lỗi máy chủ khi tải ảnh');
