@@ -54,7 +54,9 @@ app.post('/api/get-links', async (req, res) => {
 
     try {
         // Sử dụng axiosClient thay vì axios thuần
-        const response = await axiosClient.get(url);
+        // Bọc URL gốc vào đường hầm ScraperAPI
+const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
+const response = await axiosClient.get(scraperApiUrl);
 
         const dom = new JSDOM(response.data, { url });
         const document = dom.window.document;
@@ -102,7 +104,8 @@ app.post('/api/extract', async (req, res) => {
     for (const targetUrl of urls) {
         try {
             // Sử dụng axiosClient thay vì axios thuần
-            const response = await axiosClient.get(targetUrl);
+           const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(targetUrl)}`;
+const response = await axiosClient.get(scraperApiUrl);
 
             const dom = new JSDOM(response.data, { url: targetUrl });
             const reader = new Readability(dom.window.document);
