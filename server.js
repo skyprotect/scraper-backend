@@ -61,13 +61,13 @@ app.post('/api/get-links', async (req, res) => {
        const restrictedDomains = ['baohaiphong.vn', 'baoquangninh.vn', 'qdnd.vn'];
         const needsScraper = restrictedDomains.includes(domain);
 
-        let htmlContent;
+       let htmlContent;
         if (needsScraper) {
-            const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
+            // Thêm render=true để ScraperAPI chạy JavaScript như trình duyệt thật
+            const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&render=true&url=${encodeURIComponent(url)}`;
             const response = await axiosClient.get(scraperApiUrl);
             htmlContent = response.data;
         } else {
-            // qdnd.vn và các báo khác sẽ chạy trực tiếp qua đây
             const response = await axiosClient.get(url);
             htmlContent = response.data;
         }
