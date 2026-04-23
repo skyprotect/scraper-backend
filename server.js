@@ -75,38 +75,40 @@ app.post('/api/get-links', async (req, res) => {
         const seenUrls = new Set();
 
         // 2. Lấy tất cả thẻ <a> và lọc thông minh
-        document.querySelectorAll('a').forEach(a => {
-            let href = a.href;
-            let text = a.textContent.trim().replace(/\s+/g, ' ');
+       // Thay thế toàn bộ đoạn xử lý trong document.querySelectorAll('a').forEach(...) bằng logic này:
 
-            // Nới lỏng điều kiện độ dài tiêu đề xuống 20 để tránh sót bài
-            if (href.startsWith('http') && text.length > 20) {
-                try {
-                    const cleanUrl = new URL(href);
-                    cleanUrl.hash = '';
-                    href = cleanUrl.href;
-                    const pathname = cleanUrl.pathname;
+document.querySelectorAll('a').forEach(a => {
+    let href = a.href;
+    let text = a.textContent.trim().replace(/\s+/g, ' ');
 
-                    // Kiểm tra đuôi file chuẩn
-                    const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
-                    
-                    // Xử lý riêng cho qdnd.vn: 
-                    // Nới lỏng xuống >= 3 dấu gạch ngang vì URL của họ đôi khi ngắn hơn
-                    const isQdnd = cleanUrl.hostname.includes('qdnd.vn');
-                    const isQdndArticle = isQdnd && pathname.endsWith('.html') && pathname.split('-').length >= 3;
+    if (href.startsWith('http') && text.length > 20) {
+        try {
+            const cleanUrl = new URL(href);
+            cleanUrl.hash = '';
+            href = cleanUrl.href;
+            const pathname = cleanUrl.pathname;
 
-                    // Bộ lọc rác
-                    const junkTitles = ['đưa nghị quyết của đảng vào cuộc sống', 'video', 'ảnh', 'longform', 'tác phẩm', 'chuyên mục'];
-                    const isJunk = junkTitles.some(junk => text.toLowerCase().includes(junk));
+            // 1. Kiểm tra link thông thường (có đuôi .html hoặc .htm)
+            const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
+            
+            // 2. Kiểm tra link đặc thù của qdnd.vn:
+            // Phải chứa /tin-tuc/ và kết thúc bằng một dãy số (ID)
+            const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && 
+                                 pathname.includes('/tin-tuc/') && 
+                                 /\d+$/.test(pathname); // Kiểm tra kết thúc bằng số
 
-                    // Nếu thỏa mãn điều kiện chung HOẶC điều kiện riêng của qdnd
-                    if (((hasHtmlExt || isQdndArticle)) && !isJunk && !seenUrls.has(href)) {
-                        seenUrls.add(href);
-                        links.push({ title: text, url: href });
-                    }
-                } catch (e) {}
+            // Bộ lọc từ khóa rác
+            const junkTitles = ['đưa nghị quyết của đảng vào cuộc sống', 'video', 'ảnh', 'longform', 'tác phẩm', 'chuyên mục'];
+            const isJunk = junkTitles.some(junk => text.toLowerCase().includes(junk));
+
+            // Chấp nhận nếu là link thường HOẶC link bài viết qdnd, và không phải là rác
+            if ((hasHtmlExt || isQdndArticle) && !isJunk && !seenUrls.has(href)) {
+                seenUrls.add(href);
+                links.push({ title: text, url: href });
             }
-        });
+        } catch (e) {}
+    }
+});
 
         // Trả về tối đa 10 bài
         res.json(links.slice(0, 10)); 
