@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ thống Trích xuất Báo chí</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-4 md:p-8 font-sans">
+    <div class="max-w-5xl mx-auto bg-white p-6 rounded-lg shadow-md">
+        <h1 class="text-2xl font-bold mb-6 text-gray-800">Trích xuất & Chuẩn hóa Bài báo</h1>
+        
+        <div class="mb-6 p-4 border border-blue-200 bg-blue-50 rounded">
+            <h2 class="font-bold text-lg mb-2">Bước 1: Chọn Nguồn Báo</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                <label class="flex items-center space-x-2"><input type="checkbox" value="https://baohaiphong.vn/" class="site-cb form-checkbox h-4 w-4 text-blue-600"> <span>Báo Hải Phòng</span></label>
+                <label class="flex items-center space-x-2"><input type="checkbox" value="https://www.qdnd.vn/" class="site-cb form-checkbox h-4 w-4 text-blue-600"> <span>Quân Đội ND</span></label>
+                <label class="flex items-center space-x-2"><input type="checkbox" value="https://vnexpress.net/" class="site-cb form-checkbox h-4 w-4 text-blue-600"> <span>VNExpress</span></label>
+                <label class="flex items-center space-x-2"><input type="checkbox" value="https://tuoitre.vn/" class="site-cb form-checkbox h-4 w-4 text-blue-600"> <span>Tuổi Trẻ</span></label>
+            </div>
+            <div class="flex items-center gap-2">
+                <input type="text" id="customUrl" placeholder="Hoặc nhập URL trang chủ/chuyên mục khác..." class="flex-1 p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                <button id="btnFetchLinks" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition">Tải danh sách bài</button>
+            </div>
+            <div id="statusStep1" class="text-sm text-gray-600 mt-2"></div>
+        </div>
+
+        <div id="step2Area" class="mb-6 p-4 border border-green-200 bg-green-50 rounded hidden">
+            <h2 class="font-bold text-lg mb-2">Bước 2: Chọn Bản Tin Cần Trích Xuất</h2>
+            <div class="max-h-64 overflow-y-auto bg-white border border-gray-300 p-2 rounded mb-3" id="articleList">
+                </div>
+            <button id="btnExtract" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition">Trích xuất bản tin đã chọn</button>
+            <div id="statusStep2" class="text-sm text-gray-600 mt-2 font-semibold"></div>
+        </div>
+
+        <div id="step3Area" class="mb-4 hidden">
+            <div class="flex justify-between items-center mb-2">
+                <label class="block text-sm font-medium text-gray-700">Kết quả (Đã ẩn các ký tự phân cách):</label>
+                <button id="btnCopy" class="bg-gray-800 hover:bg-gray-900 text-white text-sm font-bold py-2 px-4 rounded transition">Sao chép & Tải ảnh</button>
+            </div>
+            <textarea id="resultOutput" rows="15" class="w-full p-3 border border-gray-300 rounded bg-gray-50 font-mono text-sm" readonly></textarea>
+        </div>
+    </div>
+
+    <script>
+        const btnFetchLinks = document.getElementById('btnFetchLinks');
+        const btnExtract = document.getElementById('btnExtract');
+        const btnCopy = document.getElementById('btnCopy');
+        
+        const articleList = document.getElementById('articleList');
+        const resultOutput = document.getElementById('resultOutput');
+        
+        const step2Area = document.getElementById('step2Area');
+        const step3Area = document.getElementById('step3Area');
+        
+        const statusStep1 = document.getElementById('statusStep1');
+        const statusStep2 = document.getElementById('statusStep2');
+
+        let allImagesToDownload = [];
+
+        // --- Giai đoạn 1: Quét link bài viết ---
+        btnFetchLinks.addEventListener('click', async () => {
+            let targetUrls = Array.from(document.querySelectorAll('.site-cb:checked')).map(cb => cb.value);
+            const custom = document.getElementById('customUrl').value.trim();
+            if (custom) targetUrls.push(custom);
+
+            if (targetUrls.length === 0) return alert('Vui lòng chọn ít nhất 1 nguồn báo hoặc nhập URL');
+
+            btnFetchLinks.disabled = true;
+            statusStep1.textContent = 'Đang quét dữ liệu...';
+            articleList.innerHTML = '';
+            step2Area.classList.remove('hidden');
+            step3Area.classList.add('hidden');
+
+            try {
+                let allLinks = [];
+                for (const url of targetUrls) {
+                    const res = await fetch('http://localhost:3000/api/get-links', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url })
+                    });
+                    const data = await res.json();
+                    if(Array.isArray(data)) allLinks = allLinks.concat(data);
+                }
+
+                if (allLinks.length === 0) {
+                    statusStep1.textContent = 'Không tìm thấy link bài viết nào.';
+                    return;
+                }
+
+                allLinks.forEach((item, index) => {
+                    const div = document.createElement('div');
+                    div.className = 'flex items-start space-x-2 mb-2 pb-2 border-b border-gray-100';
+                    div.innerHTML = `
+                        <input type="checkbox" id="link_${index}" value="${item.url}" class="article-cb form-checkbox h-4 w-4 text-green-600 mt-1">
+                        <label for="link_${index}" class="text-sm cursor-pointer hover:text-blue-600">
+                            <strong>${item.title}</strong><br>
+                            <span class="text-xs text-gray-500">${item.url}</span>
+                        </label>
+                    `;
+                    articleList.appendChild(div);
+                });
+                
+                statusStep1.textContent = `Tìm thấy ${allLinks.length} bản tin hợp lệ (.html/.htm).`;
+            } catch (err) {
+                statusStep1.textContent = 'Lỗi kết nối đến server!';
+            } finally {
+                btnFetchLinks.disabled = false;
+            }
+        });
+
+        // --- Giai đoạn 2: Trích xuất các bài đã chọn ---
+        btnExtract.addEventListener('click', async () => {
+            const selectedUrls = Array.from(document.querySelectorAll('.article-cb:checked')).map(cb => cb.value);
+            if (selectedUrls.length === 0) return alert('Vui lòng tick chọn ít nhất 1 bản tin để trích xuất.');
+
+            btnExtract.disabled = true;
+            statusStep2.textContent = 'Đang trích xuất nội dung...';
+            resultOutput.value = '';
+            step3Area.classList.remove('hidden');
+            allImagesToDownload = [];
+
+            try {
+                const response = await fetch('http://localhost:3000/api/extract', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ urls: selectedUrls })
+                });
+
+                const data = await response.json();
+                let combinedText = '';
+
+                data.forEach((item, i) => {
+                    if (item.error) {
+                        combinedText += `Lỗi khi xử lý: ${item.url} - ${item.error}\n\n`;
+                    } else {
+                        combinedText += item.text + (i < data.length - 1 ? '\n\n\n' : '');
+                        if (item.images && item.images.length > 0) {
+                            allImagesToDownload.push(...item.images);
+                        }
+                    }
+                });
+
+                resultOutput.value = combinedText.trim();
+                statusStep2.textContent = `Hoàn tất! Đã trích xuất ${data.length} bài. Tìm thấy ${allImagesToDownload.length} ảnh.`;
+
+            } catch (error) {
+                statusStep2.textContent = 'Lỗi kết nối đến server!';
+            } finally {
+                btnExtract.disabled = false;
+            }
+        });
+
+        // --- Giai đoạn 3: Sao chép nội dung & Tải từng ảnh ---
+        btnCopy.addEventListener('click', async () => {
+            if (!resultOutput.value) return;
+            
+            // 1. Sao chép nội dung vào Clipboard
+            try {
+                await navigator.clipboard.writeText(resultOutput.value);
+                alert('Đã sao chép nội dung văn bản!');
+            } catch (err) {
+                alert('Lỗi sao chép clipboard');
+            }
+
+            // 2. Kích hoạt lệnh tải từng ảnh
+            if (allImagesToDownload.length > 0) {
+                downloadImagesIndividually(allImagesToDownload);
+            }
+        });
+
+        function downloadImagesIndividually(images) {
+            btnCopy.disabled = true;
+            statusStep2.innerHTML = `<span class="text-blue-600">Đang kích hoạt tải ${images.length} ảnh...</span>`;
+
+            images.forEach((imgUrl, index) => {
+                // Đặt độ trễ 800ms giữa mỗi lần tải để Cốc Cốc/trình duyệt kịp xử lý
+                setTimeout(() => {
+                    const a = document.createElement('a');
+                    a.href = `http://localhost:3000/api/download-image?url=${encodeURIComponent(imgUrl)}`;
+                    a.download = ''; 
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+
+                    if (index === images.length - 1) {
+                        statusStep2.innerHTML = `<span class="text-green-600">Đã kích hoạt tải xong ${images.length} ảnh!</span>`;
+                        btnCopy.disabled = false;
+                    }
+                }, index * 800); 
+            });
+        }
+    </script>
+</body>
+</html>
