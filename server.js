@@ -46,21 +46,53 @@ function formatAuthorName(nameStr) {
         }).join(' ');
     }).filter(p => p.length > 0).join(', ');
 }
+function getVnDateKey(date = new Date()) {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Ho_Chi_Minh'
+    }).format(date); // YYYY-MM-DD
+}
 
+function parsePublishedDateFromDocument(document) {
+    const selectors = [
+        'meta[property="article:published_time"]',
+        'meta[name="pubdate"]',
+        'meta[name="publishdate"]',
+        'meta[name="timestamp"]',
+        'meta[itemprop="datePublished"]',
+        'time[datetime]'
+    ];
+
+    for (const selector of selectors) {
+        const el = document.querySelector(selector);
+        if (!el) continue;
+
+        const raw =
+            el.getAttribute('content') ||
+            el.getAttribute('datetime') ||
+            el.textContent.trim();
+
+        if (!raw) continue;
+
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) return d;
+    }
+
+    return null;
+}
 // API 1: Quét danh sách bài báo
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
 
     try {
-        // Sử dụng axiosClient thay vì axios thuần
-        // Bọc URL gốc vào đường hầm ScraperAPI
-const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
-const response = await axiosClient.get(scraperApiUrl);
+        const todayKey = getVnDateKey();
+        const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
+        const response = await axiosClient.get(scraperApiUrl);
 
         const dom = new JSDOM(response.data, { url });
         const document = dom.window.document;
-        const links = [];
+
+        const candidates = [];
         const seenUrls = new Set();
 
         document.querySelectorAll('a').forEach(a => {
@@ -74,21 +106,46 @@ const response = await axiosClient.get(scraperApiUrl);
                     href = cleanUrl.href;
                     const pathname = cleanUrl.pathname;
 
-                    // Điều kiện 1: Có đuôi .html hoặc .htm (cho VNExpress, Hải Phòng, Tuổi Trẻ...)
                     const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
-                    
-                    // Điều kiện 2: Link bài viết của QDND (Không có đuôi html nhưng chứa nhiều gạch ngang - định dạng slug)
                     const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && pathname.split('-').length >= 4;
 
                     if ((hasHtmlExt || isQdndArticle) && !seenUrls.has(href)) {
                         seenUrls.add(href);
-                        links.push({ title: text, url: href });
+                        candidates.push({ title: text, url: href });
                     }
                 } catch (e) {}
             }
         });
 
-        res.json(links);
+        const datedLinks = [];
+
+        for (const item of candidates) {
+            try {
+                const articleScraperUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(item.url)}`;
+                const articleResponse = await axiosClient.get(articleScraperUrl);
+
+                const articleDom = new JSDOM(articleResponse.data, { url: item.url });
+                const publishedDate = parsePublishedDateFromDocument(articleDom.window.document);
+
+                if (!publishedDate) continue;
+
+                const publishedKey = getVnDateKey(publishedDate);
+                if (publishedKey === todayKey) {
+                    datedLinks.push({
+                        ...item,
+                        publishedAt: publishedDate.getTime()
+                    });
+                }
+            } catch (e) {
+                // Bỏ qua bài không đọc được ngày
+            }
+        }
+
+        datedLinks.sort((a, b) => b.publishedAt - a.publishedAt);
+
+        res.json(
+            datedLinks.map(({ publishedAt, ...rest }) => rest)
+        );
     } catch (error) {
         res.status(500).json({ error: 'Không thể tải trang này' });
     }
