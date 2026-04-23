@@ -47,7 +47,6 @@ function formatAuthorName(nameStr) {
     }).filter(p => p.length > 0).join(', ');
 }
 
-// API 1: Quét danh sách bài báo (Đã cập nhật phân luồng)
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
@@ -55,19 +54,17 @@ app.post('/api/get-links', async (req, res) => {
     try {
         const domain = new URL(url).hostname.replace('www.', '');
         
-        // 1. Danh sách các báo cần dùng ScraperAPI
+        // 1. Chỉ giữ các báo thực sự chặn IP trong danh sách này
         const restrictedDomains = ['baohaiphong.vn', 'baoquangninh.vn'];
         const needsScraper = restrictedDomains.includes(domain);
 
         let htmlContent;
-
         if (needsScraper) {
-            // Dùng ScraperAPI
             const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
             const response = await axiosClient.get(scraperApiUrl);
             htmlContent = response.data;
         } else {
-            // Dùng trực tiếp (Nhanh và không tốn quota)
+            // qdnd.vn và các báo khác sẽ chạy trực tiếp qua đây
             const response = await axiosClient.get(url);
             htmlContent = response.data;
         }
@@ -77,45 +74,45 @@ app.post('/api/get-links', async (req, res) => {
         const links = [];
         const seenUrls = new Set();
 
+        // 2. Lấy tất cả thẻ <a> và lọc thông minh
         document.querySelectorAll('a').forEach(a => {
-    let href = a.href;
-    let text = a.textContent.trim().replace(/\s+/g, ' ');
+            let href = a.href;
+            let text = a.textContent.trim().replace(/\s+/g, ' ');
 
-    // 1. Kiểm tra điều kiện tiên quyết: phải là link http và tiêu đề đủ dài
-    if (href.startsWith('http') && text.length > 25) {
-        try {
-            const cleanUrl = new URL(href);
-            cleanUrl.hash = ''; // Loại bỏ hashtag (#)
-            href = cleanUrl.href;
-            const pathname = cleanUrl.pathname;
+            // Nới lỏng điều kiện độ dài tiêu đề xuống 20 để tránh sót bài
+            if (href.startsWith('http') && text.length > 20) {
+                try {
+                    const cleanUrl = new URL(href);
+                    cleanUrl.hash = '';
+                    href = cleanUrl.href;
+                    const pathname = cleanUrl.pathname;
 
-            // 2. Định nghĩa các tiêu chí lọc bài viết
-            const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
-            
-            // Riêng qdnd.vn: Bắt buộc đuôi .html và có ít nhất 4 dấu gạch ngang (tiêu đề bài viết)
-            const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && 
-                                 pathname.endsWith('.html') && 
-                                 pathname.split('-').length >= 4;
+                    // Kiểm tra đuôi file chuẩn
+                    const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
+                    
+                    // Xử lý riêng cho qdnd.vn: 
+                    // Nới lỏng xuống >= 3 dấu gạch ngang vì URL của họ đôi khi ngắn hơn
+                    const isQdnd = cleanUrl.hostname.includes('qdnd.vn');
+                    const isQdndArticle = isQdnd && pathname.endsWith('.html') && pathname.split('-').length >= 3;
 
-            // 3. Danh sách từ khóa loại bỏ (Chủ đề, Video, Ảnh...)
-            const junkTitles = ['đưa nghị quyết của đảng vào cuộc sống', 'video', 'ảnh', 'longform', 'tác phẩm'];
-            const isJunk = junkTitles.some(junk => text.toLowerCase().includes(junk));
+                    // Bộ lọc rác
+                    const junkTitles = ['đưa nghị quyết của đảng vào cuộc sống', 'video', 'ảnh', 'longform', 'tác phẩm', 'chuyên mục'];
+                    const isJunk = junkTitles.some(junk => text.toLowerCase().includes(junk));
 
-            // 4. Kiểm tra tổng hợp trước khi thêm vào danh sách
-            if ((hasHtmlExt || isQdndArticle) && !isJunk && !seenUrls.has(href)) {
-                seenUrls.add(href);
-                links.push({ title: text, url: href });
+                    // Nếu thỏa mãn điều kiện chung HOẶC điều kiện riêng của qdnd
+                    if (((hasHtmlExt || isQdndArticle)) && !isJunk && !seenUrls.has(href)) {
+                        seenUrls.add(href);
+                        links.push({ title: text, url: href });
+                    }
+                } catch (e) {}
             }
-        } catch (e) {
-            // Bỏ qua nếu URL không hợp lệ
-        }
-    }
-});
+        });
 
-        // 2. Giới hạn 10 bài trước khi gửi về Frontend
+        // Trả về tối đa 10 bài
         res.json(links.slice(0, 10)); 
 
     } catch (error) {
+        console.error("Lỗi get-links:", error.message);
         res.status(500).json({ error: 'Không thể tải trang này' });
     }
 });
