@@ -47,18 +47,32 @@ function formatAuthorName(nameStr) {
     }).filter(p => p.length > 0).join(', ');
 }
 
-// API 1: Quét danh sách bài báo
+// API 1: Quét danh sách bài báo (Đã cập nhật phân luồng)
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
 
     try {
-        // Sử dụng axiosClient thay vì axios thuần
-        // Bọc URL gốc vào đường hầm ScraperAPI
-const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
-const response = await axiosClient.get(scraperApiUrl);
+        const domain = new URL(url).hostname.replace('www.', '');
+        
+        // 1. Danh sách các báo cần dùng ScraperAPI
+        const restrictedDomains = ['baohaiphong.vn', 'baoquangninh.vn'];
+        const needsScraper = restrictedDomains.includes(domain);
 
-        const dom = new JSDOM(response.data, { url });
+        let htmlContent;
+
+        if (needsScraper) {
+            // Dùng ScraperAPI
+            const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(url)}`;
+            const response = await axiosClient.get(scraperApiUrl);
+            htmlContent = response.data;
+        } else {
+            // Dùng trực tiếp (Nhanh và không tốn quota)
+            const response = await axiosClient.get(url);
+            htmlContent = response.data;
+        }
+
+        const dom = new JSDOM(htmlContent, { url });
         const document = dom.window.document;
         const links = [];
         const seenUrls = new Set();
@@ -74,10 +88,7 @@ const response = await axiosClient.get(scraperApiUrl);
                     href = cleanUrl.href;
                     const pathname = cleanUrl.pathname;
 
-                    // Điều kiện 1: Có đuôi .html hoặc .htm (cho VNExpress, Hải Phòng, Tuổi Trẻ...)
                     const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
-                    
-                    // Điều kiện 2: Link bài viết của QDND (Không có đuôi html nhưng chứa nhiều gạch ngang - định dạng slug)
                     const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && pathname.split('-').length >= 4;
 
                     if ((hasHtmlExt || isQdndArticle) && !seenUrls.has(href)) {
@@ -88,7 +99,9 @@ const response = await axiosClient.get(scraperApiUrl);
             }
         });
 
-        res.json(links);
+        // 2. Giới hạn 10 bài trước khi gửi về Frontend
+        res.json(links.slice(0, 10)); 
+
     } catch (error) {
         res.status(500).json({ error: 'Không thể tải trang này' });
     }
