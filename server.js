@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const https = require('https');
-const jsdom = require('jsdom'); // Sửa lại cách gọi jsdom
+const jsdom = require('jsdom');
 const { JSDOM } = jsdom;
 const { Readability } = require('@mozilla/readability');
 const Parser = require('rss-parser');
@@ -13,27 +13,28 @@ app.use(express.json());
 
 const rssParser = new Parser();
 
-// Hàm tạo IP ngẫu nhiên để xoay vòng X-Forwarded-For
-function getRandomIP() {
-    return `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
-}
-
-// Cấu hình Stealth Axios
+// Cấu hình Stealth Axios - Giả danh Người dùng thật thay vì Googlebot
 function getStealthAxiosConfig() {
     return {
         httpsAgent: new https.Agent({ rejectUnauthorized: false }),
         headers: { 
-            'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            // Giả danh trình duyệt Chrome trên máy tính Windows
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://www.google.com/', 
+            // Các header Client-Hints cực kỳ quan trọng để qua mặt WAF
+            'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
             'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
             'Upgrade-Insecure-Requests': '1',
-            'X-Forwarded-For': getRandomIP() 
+            'Cache-Control': 'max-age=0'
+            // Xóa bỏ X-Forwarded-For vì IP ngẫu nhiên dễ bị đánh dấu spam
         },
-        timeout: 20000
+        timeout: 20000 
     };
 }
 
@@ -85,7 +86,7 @@ function getRssFeedUrl(inputUrl) {
     }
 }
 
-// --- API 1: Lấy link bài viết (Đã Fix lỗi 403 bằng cách dùng Axios) ---
+// --- API 1: Lấy link bài viết ---
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
@@ -93,10 +94,19 @@ app.post('/api/get-links', async (req, res) => {
     const targetRssUrl = getRssFeedUrl(url);
 
     try {
-        // [FIXED]: Dùng axios tải XML thay vì dùng thẳng thư viện RSS (để qua mặt Cloudflare)
         const response = await axios.get(targetRssUrl, getStealthAxiosConfig());
-        const feed = await rssParser.parseString(response.data);
-        
+        let xmlData = response.data;
+
+        // Bắt lỗi: Nếu WAF chặn và trả về trang HTML (CAPTCHA)
+        if (typeof xmlData === 'string' && xmlData.trim().toLowerCase().startsWith('<html')) {
+            console.error(`[!] Bị Cloudflare/WAF chặn tại: ${targetRssUrl}`);
+            return res.status(403).json({ error: 'Máy chủ báo đang bật chế độ chống Bot. Hãy thử lại sau ít phút.' });
+        }
+
+        // Fix lỗi "Attribute without value": Chuẩn hóa các attribute mồ côi trong file XML nếu có
+        xmlData = xmlData.replace(/\s+(async|defer|checked|selected|disabled|readonly|multiple|ismap)([\s>])/gi, ' $1="true"$2');
+
+        const feed = await rssParser.parseString(xmlData);
         const links = [];
         const seenUrls = new Set();
 
@@ -119,11 +129,11 @@ app.post('/api/get-links', async (req, res) => {
         res.json(links);
     } catch (error) {
         console.error(`Lỗi get-links (RSS) cho ${targetRssUrl}:`, error.message);
-        res.status(500).json({ error: 'Không thể đọc RSS Feed từ nguồn này. Máy chủ có thể đang chặn kết nối.' });
+        res.status(500).json({ error: 'Không thể đọc RSS Feed. Chi tiết lỗi: ' + error.message });
     }
 });
 
-// --- API 2: Trích xuất nội dung (Đã Fix lỗi văng JSDOM CSS) ---
+// --- API 2: Trích xuất nội dung ---
 app.post('/api/extract', async (req, res) => {
     const { urls } = req.body;
     if (!urls || !Array.isArray(urls)) return res.status(400).json({ error: 'Dữ liệu không hợp lệ' });
@@ -151,14 +161,13 @@ app.post('/api/extract', async (req, res) => {
                 }
             }
 
-            // [FIXED]: Dọn dẹp HTML trước khi đưa vào JSDOM để tránh lỗi Parse CSS/Scripts
+            // Dọn dẹp HTML trước khi parse để jsdom không bị lỗi cú pháp
             const cleanHtml = htmlData
                 .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
                 .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
                 .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '')
                 .replace(/<svg[^>]*>[\s\S]*?<\/svg>/gi, '');
 
-            // [FIXED]: Tắt hiển thị lỗi vặt của JSDOM trên console
             const virtualConsole = new jsdom.VirtualConsole();
             const dom = new JSDOM(cleanHtml, { 
                 url: targetUrl,
