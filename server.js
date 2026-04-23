@@ -2,7 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const https = require('https');
-const { JSDOM } = require('jsdom');
+const jsdom = require('jsdom'); // Sửa lại cách gọi jsdom
+const { JSDOM } = jsdom;
 const { Readability } = require('@mozilla/readability');
 const Parser = require('rss-parser');
 
@@ -20,9 +21,8 @@ function getRandomIP() {
 // Cấu hình Stealth Axios
 function getStealthAxiosConfig() {
     return {
-        httpsAgent: new https.Agent({ rejectUnauthorized: false }), // Bỏ qua lỗi SSL nếu có
+        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
         headers: { 
-            // Giả danh Googlebot 
             'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -33,7 +33,7 @@ function getStealthAxiosConfig() {
             'Upgrade-Insecure-Requests': '1',
             'X-Forwarded-For': getRandomIP() 
         },
-        timeout: 20000 // Tăng lên 20s vì đôi khi server báo chí Việt Nam phản hồi chậm
+        timeout: 20000
     };
 }
 
@@ -66,7 +66,7 @@ function formatAuthorName(nameStr) {
     }).filter(p => p.length > 0).join(', ');
 }
 
-// Tự động map URL trang chủ sang URL RSS tương ứng
+// Tự động map URL trang chủ sang URL RSS
 function getRssFeedUrl(inputUrl) {
     try {
         const url = new URL(inputUrl);
@@ -79,23 +79,24 @@ function getRssFeedUrl(inputUrl) {
             'tuoitre.vn': 'https://tuoitre.vn/rss/tin-moi-nhat.rss'
         };
         
-        // Nếu URL truyền vào đã là link .rss thì dùng luôn, nếu là trang chủ thì map sang rss
         return inputUrl.endsWith('.rss') ? inputUrl : (rssMap[hostname] || inputUrl);
     } catch (error) {
         return inputUrl;
     }
 }
 
-// --- API 1: Lấy link bài viết sử dụng RSS Feed ---
+// --- API 1: Lấy link bài viết (Đã Fix lỗi 403 bằng cách dùng Axios) ---
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
 
-    // Tự động chuyển đổi sang RSS url
     const targetRssUrl = getRssFeedUrl(url);
 
     try {
-        const feed = await rssParser.parseURL(targetRssUrl);
+        // [FIXED]: Dùng axios tải XML thay vì dùng thẳng thư viện RSS (để qua mặt Cloudflare)
+        const response = await axios.get(targetRssUrl, getStealthAxiosConfig());
+        const feed = await rssParser.parseString(response.data);
+        
         const links = [];
         const seenUrls = new Set();
 
@@ -103,7 +104,7 @@ app.post('/api/get-links', async (req, res) => {
             let href = item.link;
             try {
                 const cleanUrl = new URL(href);
-                cleanUrl.hash = ''; // Xóa phần # ở cuối url nếu có
+                cleanUrl.hash = ''; 
                 href = cleanUrl.href;
             } catch (e) {}
 
@@ -122,7 +123,7 @@ app.post('/api/get-links', async (req, res) => {
     }
 });
 
-// --- API 2: Trích xuất nội dung (Đã fix Output tương thích hoàn toàn với Frontend) ---
+// --- API 2: Trích xuất nội dung (Đã Fix lỗi văng JSDOM CSS) ---
 app.post('/api/extract', async (req, res) => {
     const { urls } = req.body;
     if (!urls || !Array.isArray(urls)) return res.status(400).json({ error: 'Dữ liệu không hợp lệ' });
@@ -150,19 +151,30 @@ app.post('/api/extract', async (req, res) => {
                 }
             }
 
-            const dom = new JSDOM(htmlData, { url: targetUrl });
+            // [FIXED]: Dọn dẹp HTML trước khi đưa vào JSDOM để tránh lỗi Parse CSS/Scripts
+            const cleanHtml = htmlData
+                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '')
+                .replace(/<svg[^>]*>[\s\S]*?<\/svg>/gi, '');
+
+            // [FIXED]: Tắt hiển thị lỗi vặt của JSDOM trên console
+            const virtualConsole = new jsdom.VirtualConsole();
+            const dom = new JSDOM(cleanHtml, { 
+                url: targetUrl,
+                virtualConsole 
+            });
+
             const reader = new Readability(dom.window.document);
             const article = reader.parse();
 
             if (article) {
-                // 1. Trích xuất mảng hình ảnh từ HTML content đã bóc tách
                 const tempDom = new JSDOM(article.content);
                 const imgTags = tempDom.window.document.querySelectorAll('img');
                 const images = [];
                 imgTags.forEach(img => {
-                    let src = img.getAttribute('src') || img.getAttribute('data-src'); // Nhiều báo dùng data-src cho lazy load
+                    let src = img.getAttribute('src') || img.getAttribute('data-src'); 
                     if (src) {
-                        // Cố gắng chuyển thành URL tuyệt đối nếu nó là relative path
                         if (!src.startsWith('http')) {
                             try { src = new URL(src, targetUrl).href; } catch(e) {}
                         }
@@ -170,11 +182,8 @@ app.post('/api/extract', async (req, res) => {
                     }
                 });
 
-                // 2. Chuẩn hóa text cho textbox (Giống định dạng cấu trúc chuẩn /TQS)
                 const sourceText = getSourceFromUrl(targetUrl);
                 const authorText = formatAuthorName(article.byline);
-                
-                // Trả về đúng object có 'text' và 'images' để frontend gộp
                 const formattedText = `Nguồn: ${sourceText}\nTiêu đề: ${article.title.trim()}\nTác giả: ${authorText}\n\nNội dung:\n${article.textContent.trim()}`;
 
                 results.push({
