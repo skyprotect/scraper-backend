@@ -94,11 +94,11 @@ document.querySelectorAll('a').forEach(a => {
             // 1. Kiểm tra link thông thường (có đuôi .html hoặc .htm)
             const hasHtmlExt = pathname.endsWith('.html') || pathname.endsWith('.htm');
             
-            // 2. Kiểm tra link đặc thù của qdnd.vn:
-            // Phải chứa /tin-tuc/ và kết thúc bằng một dãy số (ID)
+           
+          // 2. Kiểm tra link đặc thù của qdnd.vn:
+            // Bỏ điều kiện /tin-tuc/, chỉ cần kiểm tra đuôi kết thúc bằng "-[ID số]"
             const isQdndArticle = cleanUrl.hostname.includes('qdnd.vn') && 
-                                 pathname.includes('/tin-tuc/') && 
-                                 /\d+$/.test(pathname); // Kiểm tra kết thúc bằng số
+                                 /-\d+$/.test(pathname);
 
             // Bộ lọc từ khóa rác
             const junkTitles = ['đưa nghị quyết của đảng vào cuộc sống', 'video', 'ảnh', 'longform', 'tác phẩm', 'chuyên mục'];
@@ -131,52 +131,42 @@ app.post('/api/extract', async (req, res) => {
 
     for (const targetUrl of urls) {
         try {
-            // Sử dụng axiosClient thay vì axios thuần
-           const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&url=${encodeURIComponent(targetUrl)}`;
-const response = await axiosClient.get(scraperApiUrl);
+            const domain = new URL(targetUrl).hostname.replace('www.', '');
+            const restrictedDomains = ['baohaiphong.vn', 'baoquangninh.vn', 'qdnd.vn'];
+            const needsScraper = restrictedDomains.includes(domain);
 
-            const dom = new JSDOM(response.data, { url: targetUrl });
+            let htmlData;
+            if (needsScraper) {
+                // Bắt buộc phải có &render=true để vượt tường lửa như lúc lấy link
+                const scraperApiUrl = `http://api.scraperapi.com?api_key=f8bd83ce17ec6aaf34dc1fa74daad898&render=true&url=${encodeURIComponent(targetUrl)}`;
+                const response = await axiosClient.get(scraperApiUrl);
+                htmlData = response.data;
+            } else {
+                // Các trang bình thường thì dùng thẳng axiosClient
+                const response = await axiosClient.get(targetUrl);
+                htmlData = response.data;
+            }
+
+            const dom = new JSDOM(htmlData, { url: targetUrl });
             const reader = new Readability(dom.window.document);
             const article = reader.parse();
 
-            if (!article) throw new Error('Không thể phân tích nội dung');
-
-            const title = (article.title || '').toUpperCase();
-
-            const contentDom = new JSDOM(article.content);
-            const images = Array.from(contentDom.window.document.querySelectorAll('img'))
-                                .map(img => img.src)
-                                .filter(src => src.startsWith('http'));
-
-            let blocks = Array.from(contentDom.window.document.querySelectorAll('p, h2, h3, h4, li, blockquote'))
-                .map(block => block.textContent.trim().replace(/\s+/g, ' '))
-                .filter(text => text.length > 0);
-
-            let rawAuthor = article.byline ? article.byline.trim() : '';
-
-            if (blocks.length > 0) {
-                const lastBlock = blocks[blocks.length - 1];
-                if (lastBlock === lastBlock.toUpperCase() && lastBlock.length < 50) {
-                    rawAuthor = lastBlock;
-                    blocks.pop(); 
-                } else if (rawAuthor && lastBlock.includes(rawAuthor)) {
-                    blocks.pop(); 
-                }
+            if (article) {
+                results.push({
+                    url: targetUrl,
+                    title: article.title,
+                    source: getSourceFromUrl(targetUrl),
+                    author: formatAuthorName(article.byline),
+                    content: article.content,
+                    textContent: article.textContent
+                });
+            } else {
+                results.push({ url: targetUrl, error: 'Không tìm thấy nội dung bài viết' });
             }
 
-            if (blocks.length > 0) {
-                blocks[blocks.length - 1] += '/.#TQS';
-            }
-
-            const contentText = blocks.join('\n\n');
-            const authorFormatted = formatAuthorName(rawAuthor);
-            const source = getSourceFromUrl(targetUrl);
-
-            const finalOutput = `${title}\n\n${contentText}\n\nTác giả: ${authorFormatted}\nNguồn: ${source}`;
-
-            results.push({ url: targetUrl, text: finalOutput, images });
         } catch (error) {
-            results.push({ url: targetUrl, error: error.message });
+            console.error(`Lỗi trích xuất ${targetUrl}:`, error.message);
+            results.push({ url: targetUrl, error: 'Lỗi trong quá trình trích xuất' });
         }
     }
 
