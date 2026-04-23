@@ -58,7 +58,7 @@ app.post('/api/get-links', async (req, res) => {
         const domain = new URL(url).hostname.replace('www.', '');
         
         // 1. Chỉ giữ các báo thực sự chặn IP trong danh sách này
-        const restrictedDomains = ['baohaiphong.vn', 'baoquangninh.vn'];
+       const restrictedDomains = ['baohaiphong.vn', 'baoquangninh.vn', 'qdnd.vn'];
         const needsScraper = restrictedDomains.includes(domain);
 
         let htmlContent;
