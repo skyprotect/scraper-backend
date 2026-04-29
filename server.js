@@ -189,7 +189,42 @@ function parseRssManually(xmlData) {
     }
     return links;
 }
-
+// Hàm dự phòng: Bóc tách link trực tiếp từ HTML trang chủ
+function parseHtmlForLinks(htmlData, baseUrl) {
+    const links = [];
+    const seenUrls = new Set();
+    
+    try {
+        const dom = new JSDOM(htmlData);
+        // Lấy tất cả các thẻ chứa link
+        const aTags = dom.window.document.querySelectorAll('a');
+        
+        aTags.forEach(a => {
+            let url = a.href;
+            let title = a.textContent.trim();
+            
+            // Điều kiện 1: Tiêu đề phải dài (để loại bỏ các link menu như "Trang chủ", "Thể thao")
+            if (url && title && title.length > 25) { 
+                
+                // Chuẩn hóa link nếu nó bị thiếu https://...
+                if (url.startsWith('/')) {
+                    url = baseUrl.replace(/\/$/, '') + url;
+                }
+                
+                // Điều kiện 2: Link bài viết thường có đuôi .html hoặc chứa một dãy số ID
+                if ((url.includes('.html') || url.includes('.htm') || /\d{5,}/.test(url)) && !seenUrls.has(url)) {
+                    seenUrls.add(url);
+                    links.push({ title, url });
+                }
+            }
+        });
+    } catch (e) {
+        console.log('Lỗi parse HTML dự phòng:', e);
+    }
+    
+    // Trả về 15 bài mới nhất để tránh danh sách quá dài
+    return links.slice(0, 15);
+}
 function getSourceFromUrl(urlString) {
     try {
         const url = new URL(urlString);
@@ -222,7 +257,7 @@ function getRssFeedUrl(inputUrl) {
         const url = new URL(inputUrl);
         let hostname = url.hostname.replace('www.', '');
         const rssMap = {
-            'baohaiphong.vn': 'https://baohaiphong.vn/rss/tin-moi-nhat.rss',
+           
             'qdnd.vn': 'https://www.qdnd.vn/rss/tin-moi-nhat.rss',
             'vnexpress.net': 'https://vnexpress.net/rss/tin-moi-nhat.rss',
             'tuoitre.vn': 'https://tuoitre.vn/rss/tin-moi-nhat.rss'
@@ -233,23 +268,32 @@ function getRssFeedUrl(inputUrl) {
     }
 }
 
-// --- API 1: Lấy link bài viết (Sử dụng Bypass + Regex Parse) ---
+// --- API 1: Lấy link bài viết ---
 app.post('/api/get-links', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'Thiếu URL' });
 
-    const targetRssUrl = getRssFeedUrl(url);
+    const targetUrl = getRssFeedUrl(url);
 
     try {
-       const xmlData = await fetchHtmlWithPuppeteer(targetRssUrl);
-        const links = parseRssManually(xmlData);
+        const rawData = await fetchHtmlWithPuppeteer(targetUrl);
+        
+        // Cố gắng đọc theo chuẩn RSS trước
+        let links = parseRssManually(rawData);
+        
+        // Nếu RSS bị hỏng hoặc mảng trả về rỗng, lập tức kích hoạt Quét HTML
+        if (links.length === 0) {
+            console.log(`[!] RSS trống hoặc không tồn tại, tự động quét HTML trang chủ: ${targetUrl}`);
+            const baseUrl = new URL(targetUrl).origin;
+            links = parseHtmlForLinks(rawData, baseUrl);
+        }
         
         if (links.length === 0) {
-            return res.status(500).json({ error: 'Không tìm thấy bài viết. Nguồn cấp RSS có thể đang trống hoặc bị lỗi cấu trúc nặng.' });
+            return res.status(500).json({ error: 'Hoàn toàn không tìm thấy bài viết nào. Cấu trúc web có thể đã thay đổi.' });
         }
         res.json(links);
     } catch (error) {
-        console.error(`Lỗi get-links cho ${targetRssUrl}:`, error.message);
+        console.error(`Lỗi get-links cho ${targetUrl}:`, error.message);
         res.status(500).json({ error: 'Không thể đọc dữ liệu: ' + error.message });
     }
 });
