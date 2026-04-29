@@ -9,7 +9,30 @@ const { Readability } = require('@mozilla/readability');
 const app = express();
 app.use(cors());
 app.use(express.json());
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin()); // Kích hoạt chế độ tàng hình
 
+let browserInstance = null;
+
+// Hàm khởi tạo và giữ trình duyệt chạy ngầm để tiết kiệm tài nguyên
+async function getBrowser() {
+    if (!browserInstance) {
+        browserInstance = await puppeteer.launch({
+            headless: "new",
+            // Thêm dòng này để dùng Chrome của Docker
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', 
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
+            ]
+        });
+    }
+    return browserInstance;
+}
 // Cấu hình Axios giả danh Chrome
 function getStealthAxiosConfig() {
     return {
@@ -30,7 +53,44 @@ function getStealthAxiosConfig() {
         timeout: 20000 
     };
 }
+async function fetchHtmlWithPuppeteer(targetUrl) {
+    console.log(`[>] Đang dùng Puppeteer mở: ${targetUrl}`);
+    const browser = await getBrowser();
+    const page = await browser.newPage();
 
+    try {
+        // Chặn tải hình ảnh, CSS, font để tiết kiệm băng thông và tăng tốc độ
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        // Mở trang web và đợi cho đến khi mạng rảnh rỗi (để Cloudflare chạy xong)
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+
+        // Kiểm tra xem có bị vướng trang Cloudflare không
+        const title = await page.title();
+        if (title.includes('Just a moment...') || title.includes('Cloudflare')) {
+            console.log(`[!] Gặp Cloudflare tại ${targetUrl}, đang chờ giải mã...`);
+            // Chờ thêm tối đa 15s để trình duyệt tự động giải Captcha
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        }
+
+        const content = await page.content();
+        await page.close(); // Nhớ đóng tab để giải phóng RAM
+        console.log(`[+] Đã lấy thành công: ${targetUrl}`);
+        return content;
+        
+    } catch (error) {
+        await page.close();
+        console.error(`[-] Lỗi Puppeteer khi tải ${targetUrl}:`, error.message);
+        throw new Error('Puppeteer không thể lấy dữ liệu.');
+    }
+}
 // Hàm cốt lõi: Tự động xoay vòng Proxy miễn phí nếu bị Cloudflare chặn
 async function fetchWithBypass(targetUrl, responseType = 'text') {
     const config = getStealthAxiosConfig();
@@ -164,7 +224,7 @@ app.post('/api/get-links', async (req, res) => {
     const targetRssUrl = getRssFeedUrl(url);
 
     try {
-        const xmlData = await fetchWithBypass(targetRssUrl);
+       const xmlData = await fetchHtmlWithPuppeteer(targetRssUrl);
         const links = parseRssManually(xmlData);
         
         if (links.length === 0) {
@@ -186,7 +246,7 @@ app.post('/api/extract', async (req, res) => {
 
     for (const targetUrl of urls) {
         try {
-            const htmlData = await fetchWithBypass(targetUrl);
+           const htmlData = await fetchHtmlWithPuppeteer(targetUrl);
 
             // Dọn dẹp HTML trước khi parse
             const cleanHtml = htmlData

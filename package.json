@@ -11,6 +11,9 @@
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "jsdom": "^24.0.0",
+    "puppeteer": "^24.42.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rss-parser": "^3.13.0"
   }
 }
