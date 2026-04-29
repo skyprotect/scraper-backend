@@ -59,7 +59,6 @@ async function fetchHtmlWithPuppeteer(targetUrl) {
     const page = await browser.newPage();
 
     try {
-        // Chặn tải hình ảnh, CSS, font để tiết kiệm băng thông và tăng tốc độ
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
@@ -69,20 +68,37 @@ async function fetchHtmlWithPuppeteer(targetUrl) {
             }
         });
 
-        // Mở trang web và đợi cho đến khi mạng rảnh rỗi (để Cloudflare chạy xong)
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
 
-        // Kiểm tra xem có bị vướng trang Cloudflare không
-        const title = await page.title();
+        // --- CẢI TIẾN 1: Ép đợi Cloudflare giải mã xong thực sự ---
+        let title = await page.title();
         if (title.includes('Just a moment...') || title.includes('Cloudflare')) {
-            console.log(`[!] Gặp Cloudflare tại ${targetUrl}, đang chờ giải mã...`);
-            // Chờ thêm tối đa 15s để trình duyệt tự động giải Captcha
-            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            console.log(`[!] Gặp Cloudflare tại ${targetUrl}, đang ép chờ giải mã...`);
+            try {
+                // Chờ cho đến khi tiêu đề trang KHÔNG CÒN chữ Cloudflare
+                await page.waitForFunction(
+                    '(!document.title.includes("Just a moment") && !document.title.includes("Cloudflare"))', 
+                    { timeout: 20000, polling: 1000 }
+                );
+                // Đợi thêm 2 giây cho trang tải dữ liệu RSS hoàn tất
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            } catch (e) {
+                console.log('[-] Vẫn kẹt ở Cloudflare quá lâu, thử lấy dữ liệu hiện tại...');
+            }
         }
 
-        const content = await page.content();
-        await page.close(); // Nhớ đóng tab để giải phóng RAM
-        console.log(`[+] Đã lấy thành công: ${targetUrl}`);
+        // --- CẢI TIẾN 2: Lấy dữ liệu thô (Tránh việc Chrome tự làm đẹp RSS) ---
+        const content = await page.evaluate(() => {
+            // Nếu Chrome hiển thị RSS thô, nó thường bọc trong thẻ <pre>
+            const preNode = document.querySelector('pre');
+            if (preNode) return preNode.innerText;
+            
+            // Nếu không, lấy toàn bộ HTML
+            return document.documentElement.outerHTML;
+        });
+
+        await page.close();
+        console.log(`[+] Đã lấy thành công (Kích thước: ${content.length} ký tự)`);
         return content;
         
     } catch (error) {
