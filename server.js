@@ -70,35 +70,36 @@ async function fetchHtmlWithPuppeteer(targetUrl) {
 
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
 
-        // --- CẢI TIẾN 1: Ép đợi Cloudflare giải mã xong thực sự ---
         let title = await page.title();
         if (title.includes('Just a moment...') || title.includes('Cloudflare')) {
             console.log(`[!] Gặp Cloudflare tại ${targetUrl}, đang ép chờ giải mã...`);
             try {
-                // Chờ cho đến khi tiêu đề trang KHÔNG CÒN chữ Cloudflare
                 await page.waitForFunction(
                     '(!document.title.includes("Just a moment") && !document.title.includes("Cloudflare"))', 
                     { timeout: 20000, polling: 1000 }
                 );
-                // Đợi thêm 2 giây cho trang tải dữ liệu RSS hoàn tất
                 await new Promise(resolve => setTimeout(resolve, 2000));
             } catch (e) {
-                console.log('[-] Vẫn kẹt ở Cloudflare quá lâu, thử lấy dữ liệu hiện tại...');
+                console.log('[-] Vẫn kẹt ở Cloudflare quá lâu...');
             }
         }
 
-        // --- CẢI TIẾN 2: Lấy dữ liệu thô (Tránh việc Chrome tự làm đẹp RSS) ---
-        const content = await page.evaluate(() => {
-            // Nếu Chrome hiển thị RSS thô, nó thường bọc trong thẻ <pre>
-            const preNode = document.querySelector('pre');
-            if (preNode) return preNode.innerText;
-            
-            // Nếu không, lấy toàn bộ HTML
-            return document.documentElement.outerHTML;
-        });
+        // --- BẢN VÁ LỖI CHÍNH THỨC ---
+        // Bắt trình duyệt ảo tự fetch mã thô (raw text) để không bị Chrome đổi thành HTML
+        const content = await page.evaluate(async (url) => {
+            try {
+                const res = await fetch(url);
+                return await res.text();
+            } catch (e) {
+                // Nếu dự phòng thất bại, trả về HTML mặc định
+                const preNode = document.querySelector('pre');
+                if (preNode) return preNode.innerText;
+                return document.documentElement.outerHTML;
+            }
+        }, targetUrl);
 
         await page.close();
-        console.log(`[+] Đã lấy thành công (Kích thước: ${content.length} ký tự)`);
+        console.log(`[+] Đã lấy mã thô thành công (Kích thước: ${content.length} ký tự)`);
         return content;
         
     } catch (error) {
